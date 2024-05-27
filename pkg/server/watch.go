@@ -153,7 +153,7 @@ func (w *watcher) Start(ctx context.Context, r *etcdserverpb.WatchCreateRequest)
 				revision = events[len(events)-1].KV.ModRevision
 				if trace {
 					for _, event := range events {
-						logrus.Tracef("WATCH READ id=%d, key=%s, revision=%d", id, event.KV.Key, event.KV.ModRevision)
+						logrus.Tracef("WATCH READ id=%d, key=%s, revision=%d, startrevision=%d", id, event.KV.Key, event.KV.ModRevision, startRevision)
 					}
 				}
 			}

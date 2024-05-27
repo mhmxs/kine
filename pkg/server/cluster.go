@@ -46,7 +46,7 @@ func (s *KVServerBridge) MemberPromote(context.Context, *etcdserverpb.MemberProm
 // If no scheme is included in the authority data, the provided scheme is used. If no
 // authority data is provided, the default etcd endpoint is used.
 func authorityURL(ctx context.Context, scheme string) string {
-	authority := "127.0.0.1:2379"
+	authority := "172.17.0.1:2379" // TODO hardcoded
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		authList := md.Get(":authority")
 		if len(authList) > 0 {
