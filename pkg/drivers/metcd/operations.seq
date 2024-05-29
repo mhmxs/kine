@@ -1,0 +1,82 @@
+title Multi ETCD plugin
+
+actor Client
+control MultiETCD
+database ETCD Client A
+database ETCD Client B
+
+group #2f2e7b CREATE #white
+Client -> MultiETCD: Create(key, value)
+MultiETCD -> ETCD Client A: CreateEntry(key, value)
+ETCD Client A --> MultiETCD: Returns new localRevision
+MultiETCD -> MultiETCD: updateGlobalRevision(new localRevision)
+MultiETCD --> Client: Returns globalRevision
+end
+
+group #2f2e7b GET #white
+Client -> MultiETCD: Get(key, globalRevision)
+MultiETCD -> MultiETCD: translateToLocalRevision(globalRevision)
+MultiETCD -> ETCD Client A: Fetch(key, localRevision)
+ETCD Client A --> MultiETCD: Returns KeyValue
+MultiETCD -> MultiETCD: translateToGlobalRevision(localRevision)
+MultiETCD --> Client: Returns globalReviosion and KeyValue
+end
+
+group #2f2e7b UPDATE #white
+Client -> MultiETCD: Update(key, value, globalRevision)
+MultiETCD -> MultiETCD: translateToLocalRevision(globalRevision)
+MultiETCD -> ETCD Client A: UpdateEntry(key, value, localRevision)
+ETCD Client A --> MultiETCD: Returns new localRevision
+MultiETCD -> MultiETCD: updateGlobalRevision(new localRevision)
+MultiETCD --> Client: Returns globalRevision and KeyValue
+
+end
+
+group #2f2e7b DELETE #white
+Client -> MultiETCD: Delete(key, globalRevision)
+MultiETCD -> MultiETCD: translateToLocalRevision(globalRevision)
+MultiETCD -> ETCD Client A: DeleteEntry(key, localRevision)
+ETCD Client A --> MultiETCD: Returns new localRevision
+MultiETCD -> MultiETCD: updateGlobalRevision(new localRevision)
+MultiETCD --> Client: Returns globalRevision
+end
+
+group #2f2e7b LIST #white
+Client -> MultiETCD: List(prefix)
+par
+MultiETCD -> MultiETCD: translateToLocalRevision(globalRevision)
+MultiETCD -> ETCD Client A: ListEntries(prefix)
+ETCD Client A --> MultiETCD: Returns list of KeyValues A and localRevision
+MultiETCD -> MultiETCD: translateToGlobalRevision(localRevision)
+thread
+MultiETCD -> MultiETCD: translateToLocalRevision(globalRevision)
+MultiETCD -> ETCD Client B: ListEntries(prefix)
+ETCD Client B --> MultiETCD: Returns list of KeyValues B and localRevision
+MultiETCD -> MultiETCD: translateToGlobalRevision(localRevision)
+
+end
+MultiETCD -> MultiETCD: Aggregate KeyValues A, B
+MultiETCD --> Client: Returns globalRevision and KeyValues
+end
+
+group #2f2e7b WATCH #white
+Client -> MultiETCD: Watch(prefix, globalRevision)
+par
+MultiETCD -> MultiETCD: translateToLocalRevision(globalRevision)
+MultiETCD -> ETCD Client A: WatchChanges(prefix, localRevision A)
+loop
+ETCD Client A --> MultiETCD: Stream of Changes A and localReviosion
+MultiETCD -> MultiETCD: translateToGlobalRevision(localRevision)
+MultiETCD --> Client: Stream objects A
+end
+thread
+MultiETCD -> MultiETCD: translateToLocalRevision(globalRevision)
+MultiETCD -> ETCD Client B: WatchChanges(prefix, localRevision B)
+loop
+ETCD Client B --> MultiETCD: Stream of Changes B and localReviosion
+MultiETCD -> MultiETCD: translateToGlobalRevision(localRevision)
+MultiETCD --> Client: Stream objects B
+end
+end
+MultiETCD --> Client: Returns globalRevision and Stream
+end
