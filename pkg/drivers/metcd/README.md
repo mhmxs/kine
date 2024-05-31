@@ -33,6 +33,8 @@ Revision management is a crucial aspect of the `metcd` package, designed to ensu
 - **Synchronization**: When an operation affects multiple partitions, `metcd` ensures that the global revision is updated and then propagated to the local revisions relevant to the operation. This mechanism helps maintain a consistent view of the data state across the system.
 - **Revision Translation**: `metcd` provides functions to translate between global and local revisions. This is essential when a client interacts with the system and needs to understand how a particular global revision maps to local revisions in different etcd instances. Functions such as `revToOrig` and `origToRev` help translate a revision from the global context to a local context and vice versa, ensuring that clients always interact with the correct data version.
 
+![metcd png](https://github.com/mhmxs/kine/assets/4972503/a6a83672-1431-4880-b9f3-eb777caf6b2b)
+
 ### Benefits of Revision Management
 
 - **Consistency**: Ensures that all nodes in the distributed system are consistent with each other at any given global revision number, providing a strong consistency model typically required by distributed applications.
