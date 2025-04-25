@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,12 +14,15 @@ import (
 
 	"github.com/Rican7/retry/backoff"
 	"github.com/Rican7/retry/strategy"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/k3s-io/kine/pkg/metrics"
 	"github.com/k3s-io/kine/pkg/server"
 	"github.com/k3s-io/kine/pkg/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 )
 
 const (
@@ -53,8 +57,8 @@ var (
 				GROUP BY mkv.name) AS maxkv
 				ON maxkv.id = kv.id
 			WHERE
-				kv.deleted = 0 OR
-				?
+				(kv.deleted = 0 OR
+				?) %%%%s
 		) AS lkv
 		ORDER BY lkv.thename ASC
 		`, revSQL, compactRevSQL, columns)
@@ -72,6 +76,9 @@ type ConnectionPoolConfig struct {
 
 type Generic struct {
 	sync.Mutex
+
+	BuiltInSelectors  bool
+	SelectorLookupSQL string
 
 	LockWrites            bool
 	LastInsertID          bool
@@ -91,6 +98,8 @@ type Generic struct {
 	InsertSQL             string
 	FillSQL               string
 	InsertLastInsertIDSQL string
+	InsertLabelSQL        string
+	InsertFieldsSQL       string
 	GetSizeSQL            string
 	Retry                 ErrRetry
 	InsertRetry           ErrRetry
@@ -197,7 +206,11 @@ func Open(ctx context.Context, driverName, dataSourceName string, connPoolConfig
 		metricsRegisterer.MustRegister(collectors.NewDBStatsCollector(db, "kine"))
 	}
 
+	_, ok := os.LookupEnv("DISABLE_BUILTIN_SELECTORS")
+
 	return &Generic{
+		BuiltInSelectors: !ok,
+
 		DB: db,
 
 		GetRevisionSQL: q(fmt.Sprintf(`
@@ -244,6 +257,12 @@ func Open(ctx context.Context, driverName, dataSourceName string, connPoolConfig
 
 		InsertSQL: q(`INSERT INTO kine(name, created, deleted, create_revision, prev_revision, lease, value, old_value)
 			values(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, paramCharacter, numbered),
+
+		InsertLabelSQL: q(`INSERT INTO kine_labels(kine_id, kine_name, name, value)
+			values(?, ?, ?, ?)`, paramCharacter, numbered),
+
+		InsertFieldsSQL: q(`INSERT INTO kine_fields(kine_id, kine_name, value)
+			values(?, ?, ?)`, paramCharacter, numbered),
 
 		FillSQL: q(`INSERT INTO kine(id, name, created, deleted, create_revision, prev_revision, lease, value, old_value)
 			values(?, ?, ?, ?, ?, ?, ?, ?, ?)`, paramCharacter, numbered),
@@ -333,48 +352,133 @@ func (d *Generic) DeleteRevision(ctx context.Context, revision int64) error {
 	return err
 }
 
-func (d *Generic) ListCurrent(ctx context.Context, prefix, startKey string, limit int64, includeDeleted bool) (*sql.Rows, error) {
-	sql := d.GetCurrentSQL
+func (d *Generic) ListCurrent(ctx context.Context, prefix, startKey string, limit int64, includeDeleted bool, labelSelector, fieldSelector string) (*sql.Rows, error) {
+	args := []any{
+		prefix,
+		startKey,
+		includeDeleted,
+	}
+
+	var selectors string
+	if d.BuiltInSelectors && (labelSelector != "" || fieldSelector != "") {
+		var err error
+		selectors, args, err = renderSelectorsWhere(d.GetCurrentSQL, prefix, labelSelector, fieldSelector, args, d.SelectorLookupSQL)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	sql := fmt.Sprintf(d.GetCurrentSQL, selectors)
+
 	if limit > 0 {
 		sql = fmt.Sprintf("%s LIMIT %d", sql, limit)
 	}
-	return d.query(ctx, sql, prefix, startKey, includeDeleted)
+	return d.query(ctx, sql, args...)
 }
 
-func (d *Generic) List(ctx context.Context, prefix, startKey string, limit, revision int64, includeDeleted bool) (*sql.Rows, error) {
+func (d *Generic) List(ctx context.Context, prefix, startKey string, limit, revision int64, includeDeleted bool, labelSelector, fieldSelector string) (*sql.Rows, error) {
 	if startKey == "" {
-		sql := d.ListRevisionStartSQL
+		args := []any{
+			prefix,
+			revision,
+			includeDeleted,
+		}
+
+		var selectors string
+		if d.BuiltInSelectors && (labelSelector != "" || fieldSelector != "") {
+			var err error
+			selectors, args, err = renderSelectorsWhere(d.ListRevisionStartSQL, prefix, labelSelector, fieldSelector, args, d.SelectorLookupSQL)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		sql := fmt.Sprintf(d.ListRevisionStartSQL, selectors)
+
 		if limit > 0 {
 			sql = fmt.Sprintf("%s LIMIT %d", sql, limit)
 		}
-		return d.query(ctx, sql, prefix, revision, includeDeleted)
+
+		return d.query(ctx, sql, args...)
 	}
 
-	sql := d.GetRevisionAfterSQL
+	args := []any{
+		prefix,
+		startKey,
+		revision,
+		includeDeleted,
+	}
+
+	var selectors string
+	if d.BuiltInSelectors && (labelSelector != "" || fieldSelector != "") {
+		var err error
+		selectors, args, err = renderSelectorsWhere(d.GetRevisionAfterSQL, prefix, labelSelector, fieldSelector, args, d.SelectorLookupSQL)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	sql := fmt.Sprintf(d.GetRevisionAfterSQL, selectors)
+
 	if limit > 0 {
 		sql = fmt.Sprintf("%s LIMIT %d", sql, limit)
 	}
-	return d.query(ctx, sql, prefix, startKey, revision, includeDeleted)
+	return d.query(ctx, sql, args...)
 }
 
-func (d *Generic) CountCurrent(ctx context.Context, prefix, startKey string) (int64, int64, error) {
+func (d *Generic) CountCurrent(ctx context.Context, prefix, startKey string, labelSelector, fieldSelector string) (int64, int64, error) {
 	var (
 		rev sql.NullInt64
 		id  int64
 	)
 
-	row := d.queryRow(ctx, d.CountCurrentSQL, prefix, startKey, false)
+	args := []any{
+		prefix,
+		startKey,
+		false,
+	}
+
+	var selectors string
+	if d.BuiltInSelectors && (labelSelector != "" || fieldSelector != "") {
+		var err error
+		selectors, args, err = renderSelectorsWhere(d.CountCurrentSQL, prefix, labelSelector, fieldSelector, args, d.SelectorLookupSQL)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+
+	sql := fmt.Sprintf(d.CountCurrentSQL, selectors)
+
+	row := d.queryRow(ctx, sql, args...)
 	err := row.Scan(&rev, &id)
 	return rev.Int64, id, err
 }
 
-func (d *Generic) Count(ctx context.Context, prefix, startKey string, revision int64) (int64, int64, error) {
+func (d *Generic) Count(ctx context.Context, prefix, startKey string, revision int64, labelSelector, fieldSelector string) (int64, int64, error) {
 	var (
 		rev sql.NullInt64
 		id  int64
 	)
 
-	row := d.queryRow(ctx, d.CountRevisionSQL, prefix, startKey, revision, false)
+	args := []any{
+		prefix,
+		startKey,
+		revision,
+		false,
+	}
+
+	var selectors string
+	if d.BuiltInSelectors && (labelSelector != "" || fieldSelector != "") {
+		var err error
+		selectors, args, err = renderSelectorsWhere(d.CountRevisionSQL, prefix, labelSelector, fieldSelector, args, d.SelectorLookupSQL)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+
+	sql := fmt.Sprintf(d.CountRevisionSQL, selectors)
+
+	row := d.queryRow(ctx, sql, args...)
 	err := row.Scan(&rev, &id)
 	return rev.Int64, id, err
 }
@@ -406,8 +510,99 @@ func (d *Generic) IsFill(key string) bool {
 	return strings.HasPrefix(key, "gap-")
 }
 
+var codecs = serializer.NewCodecFactory(runtime.NewScheme())
+var decoder = codecs.UniversalDeserializer()
+
 //nolint:revive
 func (d *Generic) Insert(ctx context.Context, key string, create, delete bool, createRevision, previousRevision int64, ttl int64, value, prevValue []byte) (id int64, err error) {
+	id, err = d.insert(ctx, key, create, delete, createRevision, previousRevision, ttl, value, prevValue)
+
+	if !d.BuiltInSelectors || len(value) == 0 || delete || err != nil {
+		return
+	}
+
+	defer func() {
+		if err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+
+			id = 0
+			if _, rbErr := d.execute(ctx, "DELETE FROM kine WHERE id = ?", id); err != nil {
+				err = errors.Join(err, rbErr)
+			}
+		}
+	}()
+
+	obj := util.GetObjectByKey(key)
+	if _, _, err = decoder.Decode(value, nil, obj); err != nil {
+		return 0, err
+	}
+
+	metadataSQLs := []struct {
+		sql  string
+		args []any
+	}{}
+
+	labels := util.GetLabelsSetByObject(obj)
+	if len(labels) != 0 {
+		for k, v := range labels {
+			metadataSQLs = append(metadataSQLs, struct {
+				sql  string
+				args []any
+			}{
+				sql:  d.InsertLabelSQL,
+				args: []any{id, key, k, v},
+			})
+		}
+	}
+
+	fieldsSet := util.GetFieldsSetByObject(obj, value)
+	if len(fieldsSet) != 0 {
+		fieldsMap := map[string]string{}
+		for k, v := range fieldsSet {
+			fieldsMap[strings.ReplaceAll(k, ".", "_")] = v
+		}
+
+		var jsonData string
+		if jsonData, err = jsoniter.MarshalToString(fieldsMap); err != nil {
+			return 0, err
+		}
+
+		metadataSQLs = append(metadataSQLs, struct {
+			sql  string
+			args []any
+		}{
+			sql:  d.InsertFieldsSQL,
+			args: []any{id, key, jsonData},
+		})
+	}
+
+	if len(metadataSQLs) != 0 {
+		var tx *sql.Tx
+		tx, err = d.DB.Begin()
+		if err != nil {
+			return 0, err
+		}
+
+		for _, meta := range metadataSQLs {
+			if _, err = tx.ExecContext(ctx, meta.sql, meta.args...); err != nil {
+				if rbErr := tx.Rollback(); rbErr != nil {
+					err = errors.Join(err, rbErr)
+				}
+
+				return 0, err
+			}
+		}
+
+		if err = tx.Commit(); err != nil {
+			return 0, err
+		}
+	}
+
+	return
+}
+
+func (d *Generic) insert(ctx context.Context, key string, create, del bool, createRevision, previousRevision int64, ttl int64, value, prevValue []byte) (id int64, err error) {
 	if d.TranslateErr != nil {
 		defer func() {
 			if err != nil {
@@ -421,7 +616,7 @@ func (d *Generic) Insert(ctx context.Context, key string, create, delete bool, c
 	if create {
 		cVal = 1
 	}
-	if delete {
+	if del {
 		dVal = 1
 	}
 

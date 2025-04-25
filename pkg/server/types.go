@@ -23,20 +23,21 @@ type Backend interface {
 	Get(ctx context.Context, key, rangeEnd string, limit, revision int64) (int64, *KeyValue, error)
 	Create(ctx context.Context, key string, value []byte, lease int64) (int64, error)
 	Delete(ctx context.Context, key string, revision int64) (int64, *KeyValue, bool, error)
-	List(ctx context.Context, prefix, startKey string, limit, revision int64) (int64, []*KeyValue, error)
-	Count(ctx context.Context, prefix, startKey string, revision int64) (int64, int64, error)
+	List(ctx context.Context, prefix, startKey string, limit, revision int64, labelSelector, fieldSelector string) (int64, []*KeyValue, error)
+	Count(ctx context.Context, prefix, startKey string, revision int64, labelSelector, fieldSelector string) (int64, int64, error)
 	Update(ctx context.Context, key string, value []byte, revision, lease int64) (int64, *KeyValue, bool, error)
-	Watch(ctx context.Context, key string, revision int64) WatchResult
+	Watch(ctx context.Context, key string, revision int64, labelSelector string, fieldSelector string) WatchResult
 	DbSize(ctx context.Context) (int64, error)
 	CurrentRevision(ctx context.Context) (int64, error)
 	Compact(ctx context.Context, revision int64) (int64, error)
+	Grant(ctx context.Context, ttl int64) (int64, error)
 }
 
 type Dialect interface {
-	ListCurrent(ctx context.Context, prefix, startKey string, limit int64, includeDeleted bool) (*sql.Rows, error)
-	List(ctx context.Context, prefix, startKey string, limit, revision int64, includeDeleted bool) (*sql.Rows, error)
-	CountCurrent(ctx context.Context, prefix, startKey string) (int64, int64, error)
-	Count(ctx context.Context, prefix, startKey string, revision int64) (int64, int64, error)
+	ListCurrent(ctx context.Context, prefix, startKey string, limit int64, includeDeleted bool, labelSelector, fieldSelector string) (*sql.Rows, error)
+	List(ctx context.Context, prefix, startKey string, limit, revision int64, includeDeleted bool, labelSelector, fieldSelector string) (*sql.Rows, error)
+	CountCurrent(ctx context.Context, prefix, startKey string, labelSelector, fieldSelector string) (int64, int64, error)
+	Count(ctx context.Context, prefix, startKey string, revision int64, labelSelector, fieldSelector string) (int64, int64, error)
 	CurrentRevision(ctx context.Context) (int64, error)
 	After(ctx context.Context, prefix string, rev, limit int64) (*sql.Rows, error)
 	//nolint:revive

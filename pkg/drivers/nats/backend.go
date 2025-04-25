@@ -135,7 +135,7 @@ func (b *Backend) CurrentRevision(ctx context.Context) (int64, error) {
 }
 
 // Count returns an exact count of the number of matching keys and the current revision of the database.
-func (b *Backend) Count(ctx context.Context, prefix, startKey string, revision int64) (int64, int64, error) {
+func (b *Backend) Count(ctx context.Context, prefix, startKey string, revision int64, _, _ string) (int64, int64, error) {
 	count, err := b.kv.Count(ctx, prefix, startKey, revision)
 	if err != nil {
 		return 0, 0, err
@@ -338,7 +338,7 @@ func (b *Backend) Update(ctx context.Context, key string, value []byte, revision
 // that are alphanumerically equal to or greater than the startKey.
 // If limit is provided, the maximum set of matches is limited.
 // If revision is provided, this indicates the maximum revision to return.
-func (b *Backend) List(ctx context.Context, prefix, startKey string, limit, maxRevision int64) (int64, []*server.KeyValue, error) {
+func (b *Backend) List(ctx context.Context, prefix, startKey string, limit, maxRevision int64, _, _ string) (int64, []*server.KeyValue, error) {
 	matches, err := b.kv.List(ctx, prefix, startKey, limit, maxRevision)
 	if err != nil {
 		return 0, nil, err
@@ -358,7 +358,7 @@ func (b *Backend) List(ctx context.Context, prefix, startKey string, limit, maxR
 	return storeRev, kvs, nil
 }
 
-func (b *Backend) Watch(ctx context.Context, prefix string, startRevision int64) server.WatchResult {
+func (b *Backend) Watch(ctx context.Context, prefix string, startRevision int64, _, _ string) server.WatchResult {
 	events := make(chan []*server.Event, 32)
 
 	rev := startRevision
@@ -431,4 +431,8 @@ func (b *Backend) Watch(ctx context.Context, prefix string, startRevision int64)
 // Compact is a no-op / not implemented. Revision history is managed by the jetstream bucket.
 func (b *Backend) Compact(ctx context.Context, revision int64) (int64, error) {
 	return revision, nil
+}
+
+func (b *Backend) Grant(ctx context.Context, ttl int64) (int64, error) {
+	return ttl, nil
 }

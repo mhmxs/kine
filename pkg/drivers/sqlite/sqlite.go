@@ -6,6 +6,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"os"
 
@@ -40,6 +41,25 @@ var (
 		`CREATE INDEX IF NOT EXISTS kine_prev_revision_index ON kine (prev_revision)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS kine_name_prev_revision_uindex ON kine (name, prev_revision)`,
 		`PRAGMA wal_checkpoint(TRUNCATE)`,
+		`CREATE TABLE IF NOT EXISTS kine_labels
+			(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				kine_id INTEGER,
+				kine_name INTEGER,
+				name TEXT,
+				value TEXT,
+				FOREIGN KEY (kine_id) REFERENCES kine(id) ON DELETE CASCADE
+			)`,
+		`CREATE INDEX IF NOT EXISTS kine_labels_name_index ON kine_labels (kine_name, name, value)`,
+		`CREATE TABLE IF NOT EXISTS kine_fields
+			(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				kine_id INTEGER,
+				kine_name INTEGER,
+				value JSON,
+				FOREIGN KEY (kine_id) REFERENCES kine(id) ON DELETE CASCADE
+			)`,
+		`CREATE INDEX IF NOT EXISTS kine_fields_name_index ON kine_fields (kine_name)`,
 	}
 )
 
@@ -62,6 +82,7 @@ func NewVariant(ctx context.Context, driverName string, cfg *drivers.Config) (se
 		return nil, nil, err
 	}
 
+	dialect.SelectorLookupSQL = "json_extract(value, '$.%s') LIKE CONCAT('%%', ?, '%%')"
 	dialect.LastInsertID = true
 	dialect.GetSizeSQL = `SELECT SUM(pgsize) FROM dbstat`
 	dialect.CompactSQL = `
@@ -82,6 +103,12 @@ func NewVariant(ctx context.Context, driverName string, cfg *drivers.Config) (se
 					kd.id <= ?
 			)`
 	dialect.PostCompactSQL = `PRAGMA wal_checkpoint(FULL)`
+	dialect.Retry = func(err error) bool {
+		return errors.Is(err, driver.ErrBadConn)
+	}
+	dialect.InsertRetry = func(err error) bool {
+		return errors.Is(err, driver.ErrBadConn)
+	}
 	dialect.TranslateErr = func(err error) error {
 		if err, ok := err.(sqlite3.Error); ok && err.ExtendedCode == sqlite3.ErrConstraintUnique {
 			return server.ErrKeyExists

@@ -11,6 +11,8 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -76,6 +78,18 @@ func (w *watcher) Start(ctx context.Context, r *etcdserverpb.WatchCreateRequest)
 		return
 	}
 
+	labelSelector, err := labels.Parse(r.LabelSelector)
+	if err != nil {
+		logrus.Errorf("Fail to parse label selector: %v", err)
+		return
+	}
+
+	fieldSelector, err := fields.ParseSelector(r.FieldSelector)
+	if err != nil {
+		logrus.Errorf("Fail to parse field selector: %v", err)
+		return
+	}
+
 	w.Lock()
 	defer w.Unlock()
 
@@ -107,7 +121,7 @@ func (w *watcher) Start(ctx context.Context, r *etcdserverpb.WatchCreateRequest)
 			return
 		}
 
-		wr := w.backend.Watch(ctx, key, startRevision)
+		wr := w.backend.Watch(ctx, key, startRevision, r.LabelSelector, r.FieldSelector)
 
 		// If the watch result has a non-zero CompactRevision, then the watch request failed due to
 		// the requested start revision having been compacted.  Pass the current and and compact
@@ -147,6 +161,25 @@ func (w *watcher) Start(ctx context.Context, r *etcdserverpb.WatchCreateRequest)
 			case revision = <-progressCh:
 				// have been requested to send progress with no events
 			}
+
+			// filter out unnecessary events
+			tmpEvents := []*Event{}
+			for _, e := range events {
+				if e.Delete {
+					if e.PrevKV == nil || e.PrevKV.ModRevision == 0 {
+						e.PrevKV = e.KV
+					}
+					e.KV.Value = nil
+					e.PrevKV.Key = e.KV.Key
+				}
+
+				if e.KV == nil && e.PrevKV == nil ||
+					e.KV != nil && matchLabelsAndFields(e.KV.Key, e.KV.Value, labelSelector, fieldSelector) ||
+					e.PrevKV != nil && matchLabelsAndFields(e.KV.Key, e.PrevKV.Value, labelSelector, fieldSelector) {
+					tmpEvents = append(tmpEvents, e)
+				}
+			}
+			events = tmpEvents
 
 			// get max revision from collected events
 			if len(events) > 0 {
